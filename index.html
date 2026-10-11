@@ -1,0 +1,289 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Tidal Force & Roche Limit Visualizer</title>
+<script src="https://cdn.tailwindcss.com"></script>
+</head>
+<body class="bg-gray-950 text-gray-100 min-h-screen p-4">
+<div class="max-w-3xl mx-auto">
+  <h1 class="text-2xl font-bold text-center text-purple-400 mb-1">Tidal Force & Roche Limit Visualizer</h1>
+  <p class="text-center text-gray-400 text-sm mb-4">Astronomical tidal disruption simulation</p>
+
+  <!-- Presets -->
+  <div class="flex flex-wrap gap-2 justify-center mb-4">
+    <button class="preset-btn bg-blue-800 hover:bg-blue-700 px-3 py-1 rounded text-xs" data-preset="earth-moon">Earth-Moon</button>
+    <button class="preset-btn bg-purple-800 hover:bg-purple-700 px-3 py-1 rounded text-xs" data-preset="saturn-enceladus">Saturn-Enceladus</button>
+    <button class="preset-btn bg-orange-800 hover:bg-orange-700 px-3 py-1 rounded text-xs" data-preset="jupiter-io">Jupiter-Io</button>
+  </div>
+
+  <!-- Parameters -->
+  <div class="bg-gray-800 rounded-xl p-4 mb-4 grid grid-cols-1 md:grid-cols-3 gap-4">
+    <div>
+      <label class="block text-xs text-gray-300 mb-1">Planet Mass (10²⁴ kg)</label>
+      <input id="p-mass" type="number" value="5.97" min="0.1" max="2000" step="0.1"
+        class="w-full bg-gray-700 text-white rounded px-2 py-1 text-sm">
+    </div>
+    <div>
+      <label class="block text-xs text-gray-300 mb-1">Planet Radius (km)</label>
+      <input id="p-radius" type="number" value="6371" min="100" max="200000" step="100"
+        class="w-full bg-gray-700 text-white rounded px-2 py-1 text-sm">
+    </div>
+    <div>
+      <label class="block text-xs text-gray-300 mb-1">Moon Density (g/cm³)</label>
+      <input id="m-density" type="number" value="3.34" min="0.1" max="20" step="0.01"
+        class="w-full bg-gray-700 text-white rounded px-2 py-1 text-sm">
+    </div>
+  </div>
+
+  <!-- Roche Limit Display -->
+  <div class="bg-gray-800 rounded-xl p-4 mb-4">
+    <div class="grid grid-cols-2 md:grid-cols-4 gap-3 text-center">
+      <div>
+        <div class="text-xs text-gray-400">Planet Density (g/cm³)</div>
+        <div id="p-density-val" class="text-lg font-bold text-blue-400">5.51</div>
+      </div>
+      <div>
+        <div class="text-xs text-gray-400">Roche Limit (km)</div>
+        <div id="roche-val" class="text-lg font-bold text-red-400">9,492</div>
+      </div>
+      <div>
+        <div class="text-xs text-gray-400">Current Distance (km)</div>
+        <div id="dist-val" class="text-lg font-bold text-yellow-400">384,400</div>
+      </div>
+      <div>
+        <div class="text-xs text-gray-400">Status</div>
+        <div id="status-val" class="text-lg font-bold text-green-400">Safe</div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Distance Slider -->
+  <div class="bg-gray-800 rounded-xl p-4 mb-4">
+    <label class="block text-sm text-gray-300 mb-2">Orbital Distance: <span id="slider-val" class="text-yellow-300 font-bold">384,400</span> km</label>
+    <input type="range" id="dist-slider" min="1" max="100" value="80" class="w-full">
+    <div class="flex justify-between text-xs text-gray-500 mt-1">
+      <span>Near (× Planet Radius)</span><span>Far</span>
+    </div>
+  </div>
+
+  <!-- Canvas -->
+  <div class="bg-gray-900 rounded-xl p-3">
+    <canvas id="canvas" width="600" height="350" class="w-full rounded"></canvas>
+  </div>
+
+  <!-- Formula -->
+  <div class="bg-gray-800 rounded-xl p-3 mt-4 text-xs text-gray-300">
+    <p class="font-mono">Roche Limit: d = 2.44 × R<sub>planet</sub> × (ρ<sub>planet</sub>/ρ<sub>moon</sub>)<sup>1/3</sup></p>
+    <p class="mt-1 font-mono">Tidal Force: F<sub>tidal</sub> = 2GMm·r / d³</p>
+  </div>
+</div>
+
+<script>
+const canvas = document.getElementById('canvas');
+const ctx = canvas.getContext('2d');
+
+const PRESETS = {
+  'earth-moon':       { pm: 5.97,   pr: 6371,   md: 3.34  },
+  'saturn-enceladus': { pm: 568.3,  pr: 58232,  md: 1.61  },
+  'jupiter-io':       { pm: 1898.0, pr: 71492,  md: 3.53  }
+};
+
+let particles = [];
+let exploding = false;
+let explodeTimer = 0;
+
+function getPlanetDensity() {
+  const mass_kg = parseFloat(document.getElementById('p-mass').value) * 1e24;
+  const radius_m = parseFloat(document.getElementById('p-radius').value) * 1e3;
+  const vol = (4/3) * Math.PI * Math.pow(radius_m, 3);
+  return mass_kg / vol / 1000; // g/cm³
+}
+
+function getRocheLimit() {
+  const R = parseFloat(document.getElementById('p-radius').value); // km
+  const rhoP = getPlanetDensity();
+  const rhoM = parseFloat(document.getElementById('m-density').value);
+  return 2.44 * R * Math.pow(rhoP / rhoM, 1/3);
+}
+
+function getDistance() {
+  const R = parseFloat(document.getElementById('p-radius').value);
+  const slider = parseInt(document.getElementById('dist-slider').value);
+  // Map slider 1-100 → 1.1×R to 100×R
+  const mult = 1.1 + (slider / 100) * 98.9;
+  return R * mult;
+}
+
+function updateInfo() {
+  const roche = getRocheLimit();
+  const dist = getDistance();
+  const pDens = getPlanetDensity();
+
+  document.getElementById('p-density-val').textContent = pDens.toFixed(2);
+  document.getElementById('roche-val').textContent = Math.round(roche).toLocaleString();
+  document.getElementById('dist-val').textContent = Math.round(dist).toLocaleString();
+  document.getElementById('slider-val').textContent = Math.round(dist).toLocaleString();
+
+  const inside = dist < roche;
+  const statusEl = document.getElementById('status-val');
+  statusEl.textContent = inside ? 'BREAKING APART!' : 'Safe';
+  statusEl.className = inside ? 'text-lg font-bold text-red-400' : 'text-lg font-bold text-green-400';
+}
+
+let angle = 0;
+
+function draw() {
+  const W = canvas.width, H = canvas.height;
+  ctx.clearRect(0, 0, W, H);
+
+  // Background
+  ctx.fillStyle = '#050510';
+  ctx.fillRect(0, 0, W, H);
+
+  // Stars
+  ctx.fillStyle = 'rgba(255,255,255,0.6)';
+  for (let i = 0; i < 80; i++) {
+    const sx = ((i * 137 + 17) % W);
+    const sy = ((i * 97 + 43) % H);
+    ctx.fillRect(sx, sy, 1, 1);
+  }
+
+  const R = parseFloat(document.getElementById('p-radius').value);
+  const dist = getDistance();
+  const roche = getRocheLimit();
+
+  // Scale: planet at center-left
+  const planetX = W * 0.3;
+  const planetY = H * 0.5;
+  const maxOrbit = W * 0.45;
+  const orbitR = Math.min(maxOrbit, (dist / (R * 30)) * maxOrbit + 30);
+  const planetPx = 30;
+
+  // Draw Roche limit circle (dashed red)
+  const rocheOrbitR = Math.min(maxOrbit, (roche / (R * 30)) * maxOrbit + 30);
+  ctx.beginPath();
+  ctx.arc(planetX, planetY, rocheOrbitR, 0, Math.PI*2);
+  ctx.strokeStyle = 'rgba(255,60,60,0.5)';
+  ctx.lineWidth = 1;
+  ctx.setLineDash([5,5]);
+  ctx.stroke();
+  ctx.setLineDash([]);
+
+  // Roche limit label
+  ctx.fillStyle = 'rgba(255,100,100,0.8)';
+  ctx.font = '10px sans-serif';
+  ctx.fillText('Roche Limit', planetX + rocheOrbitR + 3, planetY);
+
+  // Orbit path
+  ctx.beginPath();
+  ctx.arc(planetX, planetY, orbitR, 0, Math.PI*2);
+  ctx.strokeStyle = 'rgba(100,100,150,0.3)';
+  ctx.lineWidth = 1;
+  ctx.stroke();
+
+  // Planet
+  const grad = ctx.createRadialGradient(planetX-5, planetY-5, 2, planetX, planetY, planetPx);
+  grad.addColorStop(0, '#5577ff');
+  grad.addColorStop(0.5, '#3355cc');
+  grad.addColorStop(1, '#112244');
+  ctx.beginPath();
+  ctx.arc(planetX, planetY, planetPx, 0, Math.PI*2);
+  ctx.fillStyle = grad;
+  ctx.fill();
+
+  // Moon position
+  const inside = dist < roche;
+  const mx = planetX + Math.cos(angle) * orbitR;
+  const my = planetY + Math.sin(angle) * orbitR;
+
+  if (!inside || (inside && !exploding)) {
+    // Tidal deformation: stretch moon along orbital radial axis
+    const stretchFactor = inside ? 2.5 : 1 + (roche - dist) / roche * 1.5;
+    const moonR = 10;
+
+    ctx.save();
+    ctx.translate(mx, my);
+    ctx.rotate(angle);
+    ctx.scale(Math.max(1, stretchFactor), 1/Math.max(1, stretchFactor * 0.5));
+
+    const moonGrad = ctx.createRadialGradient(-2,-2,1, 0,0, moonR);
+    moonGrad.addColorStop(0, inside ? '#ff8888' : '#cccccc');
+    moonGrad.addColorStop(1, inside ? '#441111' : '#444444');
+    ctx.beginPath();
+    ctx.arc(0, 0, moonR, 0, Math.PI*2);
+    ctx.fillStyle = moonGrad;
+    ctx.fill();
+    ctx.restore();
+  }
+
+  // Particles if exploding
+  if (inside) {
+    if (!exploding) {
+      exploding = true;
+      particles = Array.from({length:30}, () => ({
+        x: mx, y: my,
+        vx: (Math.random()-0.5)*3,
+        vy: (Math.random()-0.5)*3,
+        life: 1.0,
+        r: Math.random()*4+2
+      }));
+    }
+    particles.forEach(p => {
+      p.x += p.vx; p.y += p.vy; p.life -= 0.01;
+      if (p.life < 0) { p.life = 1; p.x = mx; p.y = my; }
+      ctx.beginPath();
+      ctx.arc(p.x, p.y, p.r, 0, Math.PI*2);
+      ctx.fillStyle = `rgba(255,150,50,${p.life})`;
+      ctx.fill();
+    });
+  } else {
+    exploding = false;
+    particles = [];
+  }
+
+  // Tidal force arrows (simplified)
+  if (!inside) {
+    const arrowLen = 20 * (roche/dist);
+    ctx.strokeStyle = 'rgba(255,200,0,0.6)';
+    ctx.lineWidth = 2;
+    ctx.beginPath();
+    ctx.moveTo(mx + Math.cos(angle)*8, my + Math.sin(angle)*8);
+    ctx.lineTo(mx + Math.cos(angle)*(8+arrowLen), my + Math.sin(angle)*(8+arrowLen));
+    ctx.stroke();
+    ctx.beginPath();
+    ctx.moveTo(mx - Math.cos(angle)*8, my - Math.sin(angle)*8);
+    ctx.lineTo(mx - Math.cos(angle)*(8+arrowLen*0.5), my - Math.sin(angle)*(8+arrowLen*0.5));
+    ctx.stroke();
+  }
+
+  angle += 0.01;
+  updateInfo();
+  requestAnimationFrame(draw);
+}
+
+// Slider remaps
+document.getElementById('dist-slider').addEventListener('input', () => {
+  exploding = false; particles = [];
+});
+
+document.querySelectorAll('.preset-btn').forEach(btn => {
+  btn.addEventListener('click', () => {
+    const p = PRESETS[btn.dataset.preset];
+    document.getElementById('p-mass').value = p.pm;
+    document.getElementById('p-radius').value = p.pr;
+    document.getElementById('m-density').value = p.md;
+    document.getElementById('dist-slider').value = 80;
+    exploding = false; particles = [];
+  });
+});
+
+['p-mass','p-radius','m-density'].forEach(id => {
+  document.getElementById(id).addEventListener('input', () => { exploding=false; particles=[]; });
+});
+
+draw();
+</script>
+</body>
+</html>
